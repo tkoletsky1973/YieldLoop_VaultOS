@@ -1,6 +1,6 @@
-# YieldLoop — Builder Document (Dev-Ready / Zero Ambiguity)
+# YieldLoop — Builder Document
 
-## Title Page (LOCKED)
+## Title Page 
 
 **Document Title:** YieldLoop — Complete Builder Document (Dev-Ready / No Ambiguity)  
 **Project/Product Name:** YieldLoop  
@@ -466,7 +466,7 @@ Allowed durations:
 
 ### 1.11.3 Lock Cap Schedule (Locked)
 Unlocked:
-- cap = 1.0250
+- cap = 1.0150
 
 Locked caps:
 - 30d  -> 1.0250
@@ -538,247 +538,265 @@ There MUST NOT be:
 
 ---
 
-# 2. User Vault Model (Positions, Allocation, Compounding, Rewards)
+# 2. User Vault Model (Accounts/Vaults, Positions, Labels, Allocation, Compounding, Rewards)
 
-This section defines the complete vault/position behavior and required state machines.
-The developer MUST implement exactly these vault objects, states, permissions, and user flows.
-
----
-
-## 2.1 Core Design (Hard)
-YieldLoop uses:
-- per-user Vaults
-- per-deposit Positions
-- deterministic accounting per Position
-
-Key rule:
-- Positions are isolated accounting units.
-- Positions MUST NOT cross-subsidize each other.
-- Vault may aggregate views for UX, but state and accounting are Position-based.
+This section is the definitive build spec for how user funds are organized.
+It includes the new requirement: **multiple labeled accounts/baskets** (Christmas fund, car, college, etc.).
+The developer MUST implement this exactly. No alternate data model is allowed in v1.
 
 ---
 
-## 2.2 Vault Object (Per Wallet)
+## 2.1 Core Structure (Locked)
 
-### 2.2.1 Vault Identifier
-- VaultID = keccak256(userAddress)
+YieldLoop storage model is:
 
-### 2.2.2 Vault Properties (Stored)
-Each Vault MUST store:
+- **Wallet (User)**
+  - can create **multiple Accounts** (also called Vaults internally)
+  - each Account contains **multiple Positions**
+  - each deposit creates a new Position
+
+Definitions:
+
+- **Account** (Normie Mode UX term)
+- **Vault** (Advanced Mode / internal term)
+- **Position** = single deposit container with its own strategy config and accounting
+
+Hard rule:
+- **Deposits NEVER merge.** Every deposit creates a new Position, attached to a selected Account/Vault.
+
+---
+
+## 2.2 Objects and Identifiers (Hard)
+
+### 2.2.1 Wallet
+A Wallet is the user’s connected address:
 - userAddress
-- createdTimestamp
-- positionCount
-- totalPrincipalUSDT (sum of all Position principals, excluding claim balances)
-- totalClaimableUSDT (aggregate of all positions)
-- totalClaimableLOOP (aggregate of all positions)
-- vaultStatus
 
-### 2.2.3 Vault Status (Enum)
-VaultStatus MUST be:
-- ACTIVE
-- FROZEN (admin emergency)
-- SUNSET (protocol sunset state)
+YieldLoop MUST treat the wallet as the sole identity.
 
-Default:
-- ACTIVE
+No username/password account system exists for custody.
 
 ---
 
-## 2.3 Position Object (Per Deposit)
+### 2.2.2 AccountVault (New Required Object)
+Each wallet can create multiple AccountVault objects.
 
-### 2.3.1 Position Identifier
-- PositionID = sequential integer index within Vault
+AccountVault must have:
 
-### 2.3.2 Position Required Properties (Stored)
-Each Position MUST store:
+- accountVaultId (bytes32)
+- ownerAddress (address)
+- createdTimestamp (uint64)
+- status (enum: ACTIVE / FROZEN / SUNSET)
+- positionCount (uint32)
 
-**Identity**
-- VaultID
-- PositionID
+Accounting totals:
+- totalDepositedUSDT
+- totalWithdrawnUSDT
+- totalClaimedUSDT
+- totalClaimedLOOP
+- totalLifetimeNetProfitUSDT
+- totalLifetimeFeesUSDT
+
+AccountVault accounting MUST be additive sums of contained Positions.
+
+---
+
+### 2.2.3 Position Object (Per Deposit)
+Each Position belongs to exactly one AccountVault.
+
+Key:
+- (accountVaultId, positionId)
+
+Position must have:
+- positionId (uint64, incremental per AccountVault)
+- createdTimestamp
+- config values
+- execution state
+- balances (free vs in-trade)
+- claim balances
+- close state
+- lock state
+- disclosure timestamps
+
+---
+
+## 2.3 Account Labels (User Purpose Buckets)
+
+### 2.3.1 UX Purpose (Hard)
+Accounts/Vaults MUST support labels to represent real-world buckets, e.g.:
+- Christmas Fund
+- New Car
+- College
+- House
+- Vacation
+- Emergency Fund
+
+This is NOT optional. It is core to “feels like fintech”.
+
+---
+
+### 2.3.2 Label Storage Policy (Locked)
+Locked decision:
+✅ Account labels MUST be stored **off-chain** only.
+
+Reason:
+- avoid on-chain personal intent data
+- reduce gas
+- avoid string storage complexity
+
+On-chain stores accountVaultId and accounting only.
+
+---
+
+### 2.3.3 Backend Label Schema (Hard)
+Backend MUST store:
+
+AccountLabelRecord:
+- ownerAddress
+- accountVaultId
+- labelText (string, max 32 chars)
 - createdTimestamp
 - lastUpdatedTimestamp
 
-**Deposit**
-- principalUSDT (original principal)
-- currentValueUSDT (computed view; not authoritative unless settlement snapshot)
-- depositTxHash
+Label rules:
+- min length: 2
+- max length: 32
+- allowed: [A-Z a-z 0-9 space - _]
+- no emojis
+- no URL strings
 
-**User Strategy Config**
-- allocationBPS[5]  (BTCB, ETH, BNB, XRP, SOL; must sum 10000)
-- compoundingMode   (A/B/C)
-- rewardCurrency    (USDT or LOOP)
-
-**Execution / Trade State**
-- positionState (enum)
-- openExecutionCount
-- inTradeUSDT (USDT currently deployed in active execution)
-- freeUSDT (USDT not in active execution)
-- freeTokenBalances[5] (token balances held idle per asset)
-- lastExecutionTimestamp
-
-**Claim Accounting**
-- claimableUSDT
-- claimableLOOP
-- lifetimeNetProfitUSDT
-- lifetimeFeesUSDT
-
-**Close Controls**
-- closeRequested (bool)
-- closeRequestTimestamp
-
-**Lock Config**
-- lockEnabled (bool)
-- lockDurationSeconds
-- lockStartTimestamp
-- lockEndTimestamp
-- lockBonusCapMultiplier (scaled int e.g. 10250 = 1.0250)
-
-**Risk / Compliance**
-- riskDisclosureAckTimestamp
-- feeDisclosureAckTimestamp
-- strategyDisclosureAckTimestamp
-- lastConfigChangeTimestamp
+If invalid:
+- frontend blocks submission
 
 ---
 
-## 2.4 Position State Machine (Hard)
+### 2.3.4 Label Mutation Rules (Hard)
+User MAY:
+- rename label any time (off-chain only)
+- create unlimited accounts
 
-### 2.4.1 PositionState Enum (Locked)
-PositionState MUST be one of:
+User MAY delete an Account label record only if:
+- AccountVault status = SUNSET
+- and contains zero Positions OR all Positions CLOSED
 
-0) CREATED  
-1) FUNDED  
-2) CONFIGURED  
-3) READY  
-4) EXECUTING_SPOT  
-5) EXECUTING_ARB  
-6) SETTLING  
-7) PAUSED  
-8) CLOSE_REQUESTED  
-9) CLOSING  
-10) CLOSED  
-
-### 2.4.2 State Transition Rules (Hard)
-
-**CREATED → FUNDED**
-- occurs immediately when deposit succeeds
-
-**FUNDED → CONFIGURED**
-- occurs when user completes required configuration:
-  - allocation weights
-  - compounding mode
-  - reward currency
-  - disclosures acknowledged
-
-**CONFIGURED → READY**
-- occurs immediately after config validity checks pass
-
-**READY → EXECUTING_SPOT**
-- only if spot execution thresholds pass
-- only if closeRequested = FALSE
-- only if not paused
-
-**READY → EXECUTING_ARB**
-- only if arbitrage thresholds pass
-- only if closeRequested = FALSE
-- only if not paused
-
-**EXECUTING_* → SETTLING**
-- occurs after execution closes
-
-**SETTLING → READY**
-- if closeRequested = FALSE and position still active
-
-**SETTLING → CLOSE_REQUESTED**
-- if closeRequested = TRUE
-
-**READY → CLOSE_REQUESTED**
-- if user requests close
-
-**CLOSE_REQUESTED → CLOSING**
-- when unwinding begins or execution completes
-
-**CLOSING → CLOSED**
-- once no active executions remain and balances are fully free
-
-**ANY → PAUSED**
-- if safety engine pauses the position
-
-**PAUSED → READY**
-- only when unpause conditions are met AND closeRequested=FALSE
-
-**PAUSED → CLOSE_REQUESTED**
-- if user requests close while paused
-
-**CLOSE_REQUESTED / CLOSING cannot return to READY**
-- once close requested, no new trades may start
+On-chain AccountVault must never be deleted.
 
 ---
 
-## 2.5 Deposit Flow (Hard)
+## 2.4 Account Creation Rules (Hard)
 
-### 2.5.1 Deposit Requirements
-- deposit asset: USDT only
-- minimum: 250 USDT
-- user must approve ERC20 allowance
-- contract must transferFrom user to Vault contract
+### 2.4.1 Create Account
+User action: Create Account
 
-### 2.5.2 Deposit Behavior
-On deposit:
-- create Position
-- set freeUSDT += depositAmount
-- set principalUSDT += depositAmount
-- state transitions CREATED→FUNDED
+Creates:
+- AccountVault (on-chain)
+- Label record (off-chain)
 
-### 2.5.3 Deposit UI Requirements
-UI MUST display before deposit confirmation:
-- minimum deposit requirement
-- that YieldLoop is spot trading + arbitrage only
-- that rewards are not guaranteed
-- that losing wallet seed loses funds
+New AccountVault default:
+- status = ACTIVE
+- positionCount = 0
+- all accounting totals = 0
 
 ---
 
-## 2.6 Configuration Flow (Hard)
+### 2.4.2 Preset Labels (Normie Mode Required)
+When creating an Account, UI MUST show presets:
 
-### 2.6.1 Required Config Inputs
-User must set:
+- Christmas Fund
+- New Car
+- College
+- House
+- Vacation
+- Emergency Fund
+- Other (custom text)
 
-1) Allocation weights:
-- input either sliders or numeric BPS fields
-- sum must equal 100%
+User can select preset or custom.
 
-2) Compounding mode:
-- Mode A: 100% compound
-- Mode B: 50/50
-- Mode C: 100% collect
+---
 
-3) Reward currency:
-- USDT (20% fee on distributed profit)
-- LOOP (17.5% fee on distributed profit)
+## 2.5 Deposit Rules (Updated)
 
-4) Optional lock selection:
-- OFF by default
-- else choose from locked menu
+### 2.5.1 Deposit Asset (Locked)
+Deposit asset MUST be:
+- USDT (BEP-20) only
 
-### 2.6.2 Mandatory Disclosures (Hard)
-User MUST acknowledge:
-- strategy disclosure
-- fee disclosure
-- risk disclosure
+Any other token deposit MUST revert.
 
-Acks must be stored on-chain as timestamps per Position:
-- riskDisclosureAckTimestamp
-- feeDisclosureAckTimestamp
-- strategyDisclosureAckTimestamp
+---
 
-Without acks:
-- execution cannot begin
+### 2.5.2 Minimum Deposit (Locked)
+MinDepositUSDT = 250
 
-### 2.6.3 Default Config (Hard)
-If user does not change defaults, defaults MUST apply:
+Deposit less than 250 USDT MUST revert.
 
-Allocation (BPS):
+---
+
+### 2.5.3 Deposit Routing (Hard)
+Deposit flow MUST include:
+
+1) user selects an AccountVaultId
+   OR creates a new Account
+2) depositUSDT(accountVaultId, amount)
+
+Deposit results:
+- a NEW Position is created under that AccountVault
+- positionState becomes FUNDED
+- freeUSDT = amount
+- positionId increments
+
+Deposits MUST NOT:
+- alter any existing Position
+- merge balances into older deposits
+
+---
+
+## 2.6 Position Configuration Requirements (Hard)
+
+Every Position MUST be configured before execution begins.
+
+Config includes:
+
+A) Allocation mix across:
+- BTCB
+- ETH
+- BNB
+- XRP
+- SOL
+
+B) Compounding mode:
+- MODE_A: 100% Compound
+- MODE_B: 50/50 Compound + Collect
+- MODE_C: 100% Collect
+
+C) Reward currency:
+- USDT
+- LOOP
+
+D) Optional lock:
+- OFF or VaultOS lock duration
+
+---
+
+### 2.6.1 Allocation Encoding (Hard)
+allocationBPS[5] where index maps to:
+
+0 BTCB  
+1 ETH  
+2 BNB  
+3 XRP  
+4 SOL  
+
+Rules:
+- sum(allocationBPS) = 10000 OR revert
+- each entry must be <= 10000
+- negative values impossible by type
+
+---
+
+### 2.6.2 Default Config (Locked)
+Default settings for new Positions:
+
+Allocation:
 - BTCB 3000
 - ETH  2500
 - BNB  2500
@@ -786,201 +804,139 @@ Allocation (BPS):
 - SOL  1000
 
 Compounding:
-- Mode B (50/50)
+- MODE_B (50/50)
 
 Reward currency:
-- LOOP
+- LOOP (default)
 
 Lock:
-- OFF
+- OFF (default)
 
 ---
 
-## 2.7 Config Change Rules (Hard)
+## 2.7 Execution Eligibility Rules (Hard)
 
-### 2.7.1 Config Change Allowed Window
-User may change config ONLY if:
-- openExecutionCount = 0
-- positionState is READY or PAUSED
-- closeRequested = FALSE
+A Position may enter READY state only if:
 
-### 2.7.2 Config Change Restrictions
-User may update:
-- allocation weights
-- compounding mode
-- reward currency
+- deposit complete
+- config saved
+- disclosures acknowledged on-chain:
+  - strategyAckTimestamp
+  - feeAckTimestamp
+  - riskAckTimestamp
 
-User may NOT:
-- shorten or remove lock once enabled
-- change lock duration after lockStartTimestamp
-
-### 2.7.3 Config Change Compliance Gate
-Any config change MUST require:
-- reconfirm disclosures (“refresh acknowledgment”)
-- store lastConfigChangeTimestamp
-
-Reason:
-- compliance control and explicit consent
+If any disclosure missing:
+- Position MUST remain CONFIGURED
+- keeper MUST ignore it
 
 ---
 
-## 2.8 Add Deposit Flow (Hard)
+## 2.8 Balance Partition Rules (Hard)
 
-User may add funds at any time with two options:
+Positions MUST keep balances partitioned as:
 
-### 2.8.1 Option 1 — Add to Existing Position (Default = OFF)
-This option is NOT allowed in v1 to reduce complexity.
-Locked v1 rule:
-- Add deposit always creates a NEW Position.
+- freeUSDT (withdrawable now)
+- inTradeUSDT (not withdrawable)
+- idleTokenBalances[5] (optional holding while between trades, not claimable)
+- claimableUSDT
+- claimableLOOP
 
-### 2.8.2 Option 2 — Create New Position (Locked v1 Default)
-- every deposit creates a new PositionID
-- new Position inherits default config (Section 2.6.3)
-- user may configure independently
-
-This prevents:
-- weird blended accounting
-- strategy drift
-- lock intermixing
-- execution entanglement
+Hard rule:
+- claimable balances MUST NEVER be used for trading
 
 ---
 
-## 2.9 Withdraw Flow (Hard)
+## 2.9 Withdraw Rules (Hard)
 
-### 2.9.1 Withdrawable Balance Rules
-User can withdraw ONLY:
-- freeUSDT
-- freeTokenBalances (if system holds them idle and user requests)
-Default:
-- system SHOULD unwind idle tokens to USDT before withdrawal unless user requests otherwise
+### 2.9.1 Withdraw Free Funds Anytime
+User may withdraw at any time:
 
-Locked v1 rule:
-- withdrawals are in USDT only
+withdrawFreeUSDT(accountVaultId, positionId, amount)
 
-### 2.9.2 Withdrawal Limits
-- user may withdraw freeUSDT at any time
-- if user tries to withdraw funds inTradeUSDT:
-  - revert
-  - UI must show message:
-    - “Funds currently in trade. Request close to unwind.”
-
-### 2.9.3 Withdrawal Fees
-YieldLoop v1 has:
-- NO withdrawal fee
-- NO principal fee
-
-Only performance fee exists on distributed profit.
+Rules:
+- amount <= freeUSDT
+- transfers USDT to wallet
+- updates accounting
 
 ---
 
-## 2.10 Close Position Flow (Hard)
+### 2.9.2 No Forced Withdrawal Blocking
+The system must never prevent:
+- withdrawal of freeUSDT
+Even if:
+- global pause active
+- keeper down
+- strategy paused
+
+---
+
+## 2.10 Close Rules (Hard)
 
 ### 2.10.1 Close Request
-User may request close at any time.
+User may request close anytime:
 
-Effect:
+requestClose(accountVaultId, positionId)
+
+Effects:
 - closeRequested = TRUE
-- closeRequestTimestamp stored
-- PositionState transitions to CLOSE_REQUESTED (or remains if already closing)
+- new executions prohibited
+- keeper must stop initiating trades
+- position transitions to CLOSE_REQUESTED
 
-### 2.10.2 Close Execution Rules
-Once closeRequested = TRUE:
-- no new trades may start
-- open executions must finish normally
-- once execution closes, system transitions to CLOSING
-- system unwinds all token holdings back to USDT (unless prevented by guardrails)
+---
 
-### 2.10.3 Closing Completion
+### 2.10.2 Close Completion
 Position becomes CLOSED only when:
 - openExecutionCount = 0
 - inTradeUSDT = 0
-- all token balances unwound to USDT
-- freeUSDT is 100% of remaining value
+- idleTokenBalances = zeroed OR swapped back to USDT
 
-### 2.10.4 Withdraw at Close
-Upon CLOSED:
-- user may withdraw 100% remaining balance immediately
-
----
-
-## 2.11 Claim Flows (Hard)
-
-Claim actions are separate from withdrawal of principal.
-
-### 2.11.1 Claim USDT
-User can claim:
-- claimableUSDT at any time
-Claim reduces claimableUSDT and transfers USDT to wallet.
-
-### 2.11.2 Claim LOOP
-User can claim:
-- claimableLOOP at any time
-Claim reduces claimableLOOP and transfers LOOP to wallet.
-
-### 2.11.3 Claim Balance Safety
-Claim balances MUST be protected from:
-- execution engine spending
-- allocation routing
-They are “out of strategy” and belong to user.
+Then:
+- all funds become freeUSDT
+- user can withdraw
 
 ---
 
-## 2.12 Redemption Flow (Hard)
+## 2.11 Position Updates and Reconfiguration (Hard)
 
-Redemption converts LOOP to USDT under Redemption Engine rules.
+User MAY update configuration ONLY if:
 
-### 2.12.1 Redeem Trigger
-User calls:
-- redeem(LOOP_amount)
+- positionState = READY or PAUSED
+- openExecutionCount = 0
+- closeRequested = FALSE
 
-### 2.12.2 Redeem Output (Locked)
-Redeem output MUST always be:
-- USDT only
-
-### 2.12.3 Redeem Constraints
-Redeem is governed by:
-- FloorPrice
-- BonusMultiplier tiers
-- lock cap (if locked Position)
-- reserve gating
-- queue fallback
+If config updated:
+- disclosures MUST be re-acknowledged
+- lastConfigChangeTimestamp updated
 
 ---
 
-## 2.13 UI/UX Mandatory Screens (User Vault Layer)
+## 2.12 Claim Rules (Hard)
 
-UI MUST include these screens at minimum:
+Claim flows exist for profits:
 
-1) Landing / Connect Wallet
-2) Deposit screen
-3) Strategy config screen
-4) Disclosures + acknowledgments screen
-5) Vault dashboard (all positions)
-6) Position details screen
-7) Claim screen
-8) Redeem screen
-9) Lock selection screen (VaultOS)
-10) Close position screen
-11) Tx history / event log screen
-12) Settings / disclosures re-read screen
+- claimUSDT(accountVaultId, positionId, amount)
+- claimLOOP(accountVaultId, positionId, amount)
+
+Rules:
+- cannot claim more than claimable balance
+- claimable balances decrease
+- transfer to wallet occurs
 
 ---
 
-## 2.14 Mandatory Events (On-Chain Logging)
+## 2.13 Account-Level Reporting (Hard)
 
-Contracts MUST emit events for:
+UI MUST support:
 
-- VaultCreated(user, vaultId)
-- PositionCreated(vaultId, positionId, amountUSDT)
-- PositionConfigured(vaultId, positionId, allocationBPS, compoundingMode, rewardCurrency, lockEnabled, lockDuration)
-- DisclosureAcknowledged(vaultId, positionId, disclosureType, timestamp)
-- ConfigUpdated(vaultId, positionId, newConfig)
-- CloseRequested(vaultId, positionId, timestamp)
-- PositionStateChanged(vaultId, positionId, oldState, newState)
-- ClaimUSDT(vaultId, positionId, amount)
-- ClaimLOOP(vaultId, positionId, amount)
-- RedeemLOOP(vaultId, positionId, loopAmount, usdtOut, bonusMultiplier)
+- wallet-level totals
+- account-level totals (by label)
+- position-level details
+
+Must display:
+- “Christmas Fund total balance”
+- “Vacation Fund earnings”
+etc.
 
 ---
 
@@ -2370,265 +2326,362 @@ Developer MUST implement:
 
 ---
 
-# 9. Redemption Engine (Base + Bonus Tiers + Queue)
+# 9. Redemption Engine (Base + Dynamic Bonus + Caps + Queue) — UPDATED (LOCKED)
 
-This section defines LOOP redemption to USDT. Redemption is ALWAYS reserve-gated.
-The developer MUST implement redemption exactly as written.
+This section defines the LOOP → USDT redemption system with **NO ambiguity**.
+This version incorporates the new rule:
+
+✅ **Unlocked accounts have a dynamic bonus range of 1.0000 → 1.0150 ONLY**  
+✅ Bonus applies ONLY when system reserve health is strong  
+✅ Locked accounts can still reach up to 1.0500 cap (VaultOS)
+
+Redemption is reserve-gated and designed to prevent bank-run behavior.
 
 ---
 
 ## 9.1 Redemption Purpose (Hard)
-Redemption provides a deterministic way for users to convert LOOP back into USDT at:
-- a guaranteed base rate (FloorPrice)
-- plus a conditional reserve-funded bonus tier
 
-Redemption is NOT:
-- guaranteed profit
-- guaranteed bonus
-- guaranteed instant liquidity under stress
+Redemption exists to:
+- give LOOP a deterministic backed value path to USDT
+- enforce reserve discipline
+- provide conditional bonus payout when system health allows
+- queue redemptions under stress instead of breaking the system
+
+Redemption does NOT guarantee:
+- instant payout at all times
+- bonus payout
+- profit
 
 ---
 
 ## 9.2 Redemption Inputs / Outputs (Locked)
 
-### 9.2.1 Input
-- LOOP amount (user-specified)
+### 9.2.1 Inputs
+- LOOP_amount (user specified)
 
 ### 9.2.2 Output (Locked v1)
-- USDT only
+- USDT only (BEP-20)
 
-YieldLoop v1 MUST NOT support:
-- redemption to other tokens
-- redemption to stable baskets
-- redemption to BNB
+YieldLoop MUST NOT redeem to:
+- BNB
+- any other stablecoin
+- any basket
 
 ---
 
 ## 9.3 Redemption Preconditions (Hard)
 
-Redemption may execute only if:
-- system not globally paused OR redemption allowed while paused (default: disallowed)
-- reserve mismatch flag is FALSE
-- LOOP amount > 0
-- user has LOOP balance >= LOOP amount
-- redemption does not violate MinCR
+A redemption request MAY execute immediately only if ALL are true:
+- SystemStatus == ACTIVE
+- reserveMismatchFlag == FALSE
+- LOOP_amount > 0
+- userBalanceLOOP >= LOOP_amount
+- redemption does not violate MinCR (Section 9.10)
 
 If any fail:
-- redemption MUST revert OR queue (as defined below)
+- redemption MUST be queued OR reverted (rules below)
+
+Locked v1 decision:
+✅ If it fails MinCR: QUEUE  
+✅ If system paused or reserve mismatch: REVERT
 
 ---
 
-## 9.4 Redemption Base Rate (Hard)
+## 9.4 Redemption Base Payout (Hard)
 
-Base redemption always uses:
-- FloorPrice (current)
+Base redemption uses FloorPrice only:
 
 BaseUSDTOut =
   LOOP_amount * FloorPrice
 
-No exceptions.
+This is ALWAYS true.
 
 ---
 
-## 9.5 Bonus System (Tiered, Reserve-Gated)
+## 9.5 Bonus System Overview (UPDATED)
 
-### 9.5.1 Bonus Overview
-BonusMultiplier exists to reward usage and locking, but must never endanger reserve.
+Redemption payout may include a bonus multiplier:
 
-Bonus multiplier always satisfies:
-- 1.0000 <= BonusMultiplier <= CapMultiplier
+USDTOut =
+  floor(LOOP_amount * FloorPrice * EffectiveMultiplier)
 
-Unlocked users:
-- CapMultiplier = 1.0250
+Where:
 
-Locked users:
-- CapMultiplier = per lock schedule (Section 10)
+EffectiveMultiplier =
+  min( BonusMultiplier, CapMultiplier )
 
-### 9.5.2 Tier Step (Hard)
-BonusMultiplier MUST move in fixed steps:
+BonusMultiplier depends only on:
+- reserve health (CR bands)
+
+CapMultiplier depends on:
+- lock status
+
+Hard truths:
+- bonus can drop to 1.0000
+- cap cannot be exceeded even if CR is higher
+- payout always rounds DOWN
+
+---
+
+## 9.6 Collateralization Ratio (CR) Input (Hard)
+
+CR definition:
+
+CR =
+  SR_USDT / (LOOP_Supply * FloorPrice)
+
+Where:
+- SR_USDT = ReserveVault USDT balance
+- LOOP_Supply = total circulating LOOP supply
+- FloorPrice = current monotonic floor
+
+CR MUST be computed on-chain using current storage values.
+
+---
+
+## 9.7 BonusMultiplier (CR-Based Tiers) (Hard)
+
+### 9.7.1 TierStep (Locked)
+Bonus uses a fixed step size:
 
 TierStep = 0.0075
 
-BonusMultiplier permitted values (unlocked):
-- 1.0000
-- 1.0075
-- 1.0150
-- 1.0225
-- 1.0250
-
-Locked users may have additional caps above 1.0250 but bonus still moves in TierStep increments.
+This ensures:
+- predictable bonus steps
+- conservative reserve release
 
 ---
 
-## 9.6 CR-Based Bonus Tier Mapping (Hard)
+## 9.8 Bonus Tiers Table (UPDATED)
 
-Redemption bonus is determined from CR bands.
+This is the global tier mapping for BonusMultiplierRaw.
 
-Definitions:
-- CR = SR_USDT / (LOOP_Supply * FloorPrice)
-- CapMultiplier = unlocked cap or lock cap
+CR Bands (Locked):
 
-### 9.6.1 CR Bands (Locked)
-The system MUST use these CR bands:
+- Band 0: CR < 1.0000
+- Band 1: 1.0000 ≤ CR < 1.0125
+- Band 2: 1.0125 ≤ CR < 1.0250
+- Band 3: 1.0250 ≤ CR < 1.0375
+- Band 4: CR ≥ 1.0375
 
-Band 0: CR < 1.0000  
-Band 1: 1.0000 <= CR < 1.0125  
-Band 2: 1.0125 <= CR < 1.0250  
-Band 3: 1.0250 <= CR < 1.0375  
-Band 4: CR >= 1.0375  
+TierIndex assignment (Locked):
+- Band 0 → TierIndex = 0
+- Band 1 → TierIndex = 1
+- Band 2 → TierIndex = 2
+- Band 3 → TierIndex = 3
+- Band 4 → TierIndex = 4
 
-These bands were chosen to align with 0.0075 tier increments and conservative reserve gating.
+BonusMultiplierRaw:
+- Tier 0: 1.0000
+- Tier 1: 1.0075
+- Tier 2: 1.0150
+- Tier 3: 1.0225
+- Tier 4: 1.0250
 
-### 9.6.2 TierIndex Assignment (Locked)
-TierIndex MUST be:
-
-- Band 0 -> TierIndex = 0
-- Band 1 -> TierIndex = 1
-- Band 2 -> TierIndex = 2
-- Band 3 -> TierIndex = 3
-- Band 4 -> TierIndex = 4
-
-### 9.6.3 BonusMultiplier Formula (Hard)
+Formula form:
 BonusMultiplierRaw =
   1.0000 + TierStep * TierIndex
 
-Then apply cap:
-BonusMultiplier =
+---
+
+## 9.9 CapMultiplier (UPDATED — Critical Change)
+
+CapMultiplier controls the max bonus a user can receive.
+
+### 9.9.1 Unlocked Cap (UPDATED / LOCKED)
+Unlocked accounts (no VaultOS lock active) MUST have:
+
+UnlockedCapMultiplier = 1.0150
+
+Meaning:
+- bonus is dynamic from 1.0000 → 1.0150
+- tiers above 1.0150 are ignored for unlocked users
+
+This creates the exact rule you requested:
+✅ unlocked accounts only get bonus if system is doing well  
+✅ max boost 1.015  
+✅ otherwise 1.000 or 1.0075
+
+---
+
+### 9.9.2 Locked Caps (VaultOS)
+If VaultOS lock is active and not expired, cap comes from LockEngine:
+
+Cap schedule (unchanged):
+- Unlocked: 1.0150
+- 30d:  1.0250
+- 90d:  1.0275
+- 180d: 1.0300
+- 1y:   1.0350
+- 2y:   1.0400
+- 3y:   1.0450
+- 5y+:  1.0500
+- 10y:  1.0500
+- 25y:  1.0500
+
+Hard max:
+- 1.0500
+
+---
+
+### 9.9.3 Lock Expiration Rule (Hard)
+When lock expires:
+- CapMultiplier becomes UnlockedCapMultiplier (1.0150)
+- lock history remains recorded but does not grant cap benefit
+
+---
+
+## 9.10 EffectiveMultiplier Computation (Hard)
+
+EffectiveMultiplier =
   min(BonusMultiplierRaw, CapMultiplier)
 
+Examples:
+
+Unlocked user, strong CR:
+- BonusMultiplierRaw = 1.0250
+- CapMultiplier = 1.0150
+- EffectiveMultiplier = 1.0150
+
+Locked 3-year user, medium CR:
+- BonusMultiplierRaw = 1.0225
+- CapMultiplier = 1.0450
+- EffectiveMultiplier = 1.0225
+
+Stressed system:
+- BonusMultiplierRaw = 1.0000
+- any cap
+- EffectiveMultiplier = 1.0000
+
 ---
 
-## 9.7 Redemption Output Formula (Hard)
+## 9.11 Final Payout Formula (Hard)
 
 USDTOut =
-  floor(LOOP_amount * FloorPrice * BonusMultiplier)
-
-All values are fixed-point scaled.
+  floor( LOOP_amount * FloorPrice * EffectiveMultiplier )
 
 Rounding rule (Locked):
-- redemption payout rounds DOWN (reserve safety)
+✅ round DOWN always
 
 ---
 
-## 9.8 MinCR Enforcement (Hard)
+## 9.12 MinCR Enforcement (Hard)
 
-Redemption MUST NOT execute if it would cause:
-- CR_post < MinCR
+Redemption must NOT execute if it would cause CR to drop below MinCR.
 
-MinCR (Locked):
-- 1.0000
+Locked:
+- MinCR = 1.0000
 
-CR_post is computed conservatively as:
+Compute post-redemption reserve:
 
 SR_post = SR_USDT - USDTOut
+
+Compute CR_post:
 
 CR_post =
   SR_post / ((LOOP_Supply - LOOP_amount) * FloorPrice)
 
+Rule:
+- If CR_post < MinCR → queue redemption
+
 Edge case:
 - if LOOP_Supply - LOOP_amount == 0:
-  - CR_post is not needed
   - allow redemption if SR_post >= 0
 
 ---
 
-## 9.9 Redemption Queue System (Mandatory Fallback)
+## 9.13 Redemption Queue System (Mandatory Fallback)
 
-YieldLoop MUST implement a redemption queue.
-
-Reason:
-- prevents bank-run death spirals
-- keeps system deterministic
-- ensures fair processing under stress
-
-Queue type:
+### 9.13.1 Queue Type
 - FIFO (First In First Out)
 
-### 9.9.1 When to Queue
-Redemption request MUST be queued if:
-- normal redemption would violate MinCR
-OR
-- system is paused but queue acceptance allowed (default OFF)
+### 9.13.2 Queue When
+Redemption MUST be queued if:
+- immediate redemption violates MinCR
 
-Locked v1 rule:
-- queue acceptance allowed ONLY if system status is ACTIVE
-- if PAUSED: redemption and queue submission both disabled
+Redemption MUST REVERT if:
+- system paused
+- reserve mismatch
+- user has insufficient LOOP
+- LOOP amount = 0
 
-### 9.9.2 Queue Entry Schema (Hard)
-Each queued request stores:
+---
+
+## 9.14 Queue Entry Object (Hard)
+
+QueuedRedemption:
 - queueId
 - userAddress
-- timestamp
+- submittedTimestamp
 - loopAmountRequested
-- capMultiplierAtSubmit (derived from lock state)
-- status (QUEUED / PARTIAL / FILLED / CANCELLED)
-
-### 9.9.3 Cancel Queue Request
-User may cancel queued redemption ONLY if:
-- status == QUEUED
-- not partially filled
-
-If cancelled:
-- mark CANCELLED
-- emit RedemptionQueueCancelled event
+- capMultiplierAtSubmit
+- status: QUEUED / PARTIAL / FILLED / CANCELLED
 
 ---
 
-## 9.10 Queue Processing Rules (Hard)
+## 9.15 Queue Processing (Hard)
 
-### 9.10.1 Processing Frequency (Locked)
-Queue processing occurs:
-- once per day at 00:00 UTC
-- executed by keeper
+### 9.15.1 Processing Frequency
+- once daily at 00:00 UTC
+- keeper executes processing
 
-### 9.10.2 Daily Redemption Budget (Locked)
-To preserve SR health, daily redemptions are limited:
+### 9.15.2 Daily Budget (Locked)
+Daily maximum redemption payout:
 
-DailyRedemptionMaxPercentSR = 5.0% (Locked)
-DailyRedemptionMaxUSDT =
-  SR_USDT * 0.05
+DailyRedemptionMaxPercentSR = 5%
 
-Meaning:
-- no more than 5% of SR can be redeemed per day
+Budget formula:
+DailyBudgetUSDT = SR_USDT * 0.05
 
-### 9.10.3 Partial Fills
-If a queued redemption request exceeds remaining daily budget:
-- request is partially filled
-- remaining LOOP stays queued
+No more than this budget may be redeemed per day.
 
-Partial fill MUST:
+---
+
+### 9.15.3 Partial Fill Rules
+If a queued request is larger than remaining budget:
+- partially fill
 - burn proportional LOOP
 - pay proportional USDTOut
-- update remaining loopAmountRequested
+- remaining LOOP stays queued
 
 ---
 
-## 9.11 Redeemed LOOP Handling (Locked)
+## 9.16 Redeemed LOOP Handling (Hard)
 
 Redeemed LOOP MUST be burned.
 
-Steps:
-1) transferFrom user LOOP into redemption contract
-2) burn LOOP
-3) transfer USDTOut from SR to user
-
-This prevents:
-- double redemption
-- circular re-use
-- supply inflation exploits
+Redemption steps:
+1) transferFrom(user → RedemptionEngine, LOOP_amount)
+2) burn LOOP_amount
+3) transfer USDTOut (ReserveVault → user)
 
 ---
 
-## 9.12 Redemption Events (Mandatory)
+## 9.17 Redemption Event Requirements (Mandatory)
 
 Contracts MUST emit:
 
 - RedemptionRequested(user, loopAmount, timestamp)
-- RedemptionExecuted(user, loopBurned, usdtOut, floorPrice, bonusMultiplier, capMultiplier, timestamp)
-- RedemptionQueued(queueId, user, loopAmount, capMultiplier, timestamp)
+- RedemptionExecuted(user, loopBurned, usdtOut, floorPrice, bonusMultiplierRaw, capMultiplier, effectiveMultiplier, timestamp)
+- RedemptionQueued(queueId, user, loopAmount, capMultiplierAtSubmit, timestamp)
 - RedemptionQueueFilled(queueId, user, loopBurned, usdtOut, remainingLoopQueued, timestamp)
 - RedemptionQueueCancelled(queueId, user, timestamp)
 
+---
+
+## 9.18 Developer Checklist (Hard)
+
+Developer MUST implement:
+
+✅ UnlockedCapMultiplier = 1.0150 (dynamic 1.0000 → 1.0150 only)  
+✅ Bonus tiers still computed globally using CR bands  
+✅ EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)  
+✅ MinCR enforcement queues unsafe redemptions  
+✅ FIFO queue with daily SR budget cap  
+✅ Burn LOOP on redemption  
+✅ Full event coverage  
+
+This section is final.
 ---
 
 # 10. VaultOS Lock Engine (30 Days → 25 Years)
