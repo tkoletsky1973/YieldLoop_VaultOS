@@ -2682,39 +2682,75 @@ Developer MUST implement:
 ✅ Full event coverage  
 
 This section is final.
----
-
-# 10. VaultOS Lock Engine (30 Days → 25 Years)
-
-Locking exists solely to increase the redemption bonus CAP.
-Locking does NOT change FloorPrice.
-Locking does NOT lock principal trading access unless explicitly chosen.
 
 ---
 
-## 10.1 Locking Type (Locked v1)
+# 10. VaultOS Lock Engine (30 Days → 25 Years, Bonus Cap Control) — UPDATED (LOCKED)
 
-Locked v1 model:
-- locking applies to the Position
-- it increases redemption cap (CapMultiplier)
+This section defines YieldLoop’s lock mechanism (“VaultOS”).
+VaultOS is NOT staking. It is NOT lending. It does NOT change strategy execution.
+It ONLY affects the user’s **maximum redemption bonus cap**.
 
-Lock does not apply separately to:
-- claim balances
-- wallet-held LOOP
-
-Meaning:
-- locked advantage applies when redeeming LOOP associated with that Position’s claim/redemption pathway
-
-Implementation requirement:
-- redemption calls MUST include PositionID context if lock is enabled
-- system must validate user ownership of PositionID
+This section is updated to align with:
+✅ Multi-Account/Vault model (Section 2)  
+✅ Updated unlocked bonus cap: **dynamic 1.0000 → 1.0150** (Section 9)  
+✅ Lock applies at the **Position level** (each deposit/plan can be locked differently)
 
 ---
 
-## 10.2 Lock Options Menu (Locked v1)
+## 10.1 Purpose of Locking (Hard)
 
-User may choose:
-- OFF (default)
+VaultOS locking exists to:
+- discourage fast exits during stress
+- reward long-term capital behavior
+- give YieldLoop a reserve stability tool
+- create a clean, simple incentive:
+  - “Lock longer → higher redemption cap”
+
+Locking does NOT:
+- guarantee profit
+- prevent trading losses
+- increase trading returns
+- change fee rates
+- grant governance
+
+---
+
+## 10.2 Lock Scope (Hard)
+
+### 10.2.1 Lock Applies to Positions (Locked)
+Lock is configured **per Position**, not per Account.
+
+Reason:
+- users may have multiple purposes under one Account
+- each deposit may have different time horizon
+
+Therefore:
+- (accountVaultId, positionId) has its own lock state.
+
+---
+
+## 10.3 Lock State Variables (Hard)
+
+Each Position MUST store:
+
+- lockEnabled (bool)
+- lockDurationSeconds (uint64)
+- lockStartTimestamp (uint64)
+- lockEndTimestamp (uint64)
+- lockCapMultiplier (uint256 fixed-point 1e18)
+- lockStatus (enum: OFF / ACTIVE / EXPIRED)
+
+Hard rules:
+- lockCapMultiplier is immutable after lock activation
+- lockEndTimestamp = lockStartTimestamp + lockDurationSeconds
+
+---
+
+## 10.4 Allowed Lock Durations (Locked Menu)
+
+Lock duration must be chosen ONLY from this list:
+
 - 30 days
 - 90 days
 - 180 days
@@ -2725,120 +2761,211 @@ User may choose:
 - 10 years
 - 25 years
 
-No other durations allowed in v1.
+No other duration values are permitted.
+If duration not in list → revert.
 
 ---
 
-## 10.3 Lock Cap Schedule (Locked v1)
+## 10.5 Lock Cap Multipliers (UPDATED / LOCKED)
 
-CapMultiplier values are locked as:
+### 10.5.1 Unlocked Cap (UPDATED)
+If lock is OFF (or expired):
 
-Unlocked:
-- 1.0250
+- CapMultiplier = **1.0150**
 
-Locked:
-- 30d  -> 1.0250
-- 90d  -> 1.0275
-- 180d -> 1.0300
-- 1y   -> 1.0350
-- 2y   -> 1.0400
-- 3y   -> 1.0450
-- 5y   -> 1.0500
-- 10y  -> 1.0500
-- 25y  -> 1.0500
+Meaning:
+- unlocked users receive dynamic bonus tiers
+- but never above 1.0150
+- if system weak: 1.0000
+
+This is the new default base behavior.
+
+---
+
+### 10.5.2 Locked Cap Schedule (LOCKED)
+If lock ACTIVE:
+
+- 30 days  → cap = 1.0250
+- 90 days  → cap = 1.0275
+- 180 days → cap = 1.0300
+- 1 year   → cap = 1.0350
+- 2 years  → cap = 1.0400
+- 3 years  → cap = 1.0450
+- 5 years  → cap = 1.0500
+- 10 years → cap = 1.0500
+- 25 years → cap = 1.0500
 
 Hard maximum:
-- 1.0500
-
-No caps above 1.05 exist in v1.
+- CapMultiplier MUST NEVER exceed 1.0500
 
 ---
 
-## 10.4 Lock Activation Rules (Hard)
+## 10.6 Lock Activation Rules (Hard)
 
-### 10.4.1 Lock Activation Moment
-LockStartTimestamp is set when:
-- user confirms lock during Position configuration OR
-- user adds lock later (only allowed when no open execution)
+### 10.6.1 When Lock Can Be Added
+User may activate a lock ONLY if:
 
-LockEndTimestamp:
-- LockStartTimestamp + LockDurationSeconds
+- Position is not closing:
+  - closeRequested = FALSE
+- Position is not executing:
+  - openExecutionCount = 0
+- Position state is READY or PAUSED
+- lockStatus = OFF
 
-### 10.4.2 Lock Can Be Added Later (Allowed With Constraints)
-User may add a lock later ONLY if:
-- openExecutionCount = 0
-- closeRequested = FALSE
-- PositionState is READY
-- user re-acknowledges disclosures
-
----
-
-## 10.5 Lock Immutability (Hard)
-
-Once lockEnabled = TRUE:
-- lock cannot be removed
-- lock cannot be shortened
-- lock cannot be extended in v1
-(no “extend to upgrade bonus” feature in v1)
-
-Early exit:
-- NOT allowed
+This means:
+- user cannot lock a position mid-trade
+- user cannot lock after requesting close
 
 ---
 
-## 10.6 Lock + Redemption Interaction (Hard)
+### 10.6.2 Lock Activation Action
+Contract function:
+- enableLock(accountVaultId, positionId, durationEnum)
 
-CapMultiplier used during redemption MUST be:
+Effects:
+- lockEnabled = TRUE
+- lockDurationSeconds set from menu
+- lockStartTimestamp = block.timestamp
+- lockEndTimestamp computed
+- lockCapMultiplier set from schedule
+- lockStatus = ACTIVE
 
-If lockEnabled = FALSE:
-- CapMultiplier = 1.0250
-
-If lockEnabled = TRUE:
-- CapMultiplier = lockBonusCapMultiplier (per schedule)
-
-BonusMultiplier is computed from CR bands (Section 9),
-then capped:
-
-BonusMultiplier = min(BonusMultiplierRaw, CapMultiplier)
-
----
-
-## 10.7 Lock Maturity Behavior (Locked v1)
-
-When lock ends:
-- lockEnabled remains TRUE (historical)
-- but lock cap advantage expires
-
-Locked rule:
-- After maturity, CapMultiplier reverts to unlocked cap:
-  - 1.0250
-
-This prevents permanent privilege without ongoing lock.
+Event must emit.
 
 ---
 
-## 10.8 Lock UI Requirements (Hard)
+## 10.7 Irreversibility Rules (Hard)
 
-UI MUST disclose:
-- lock is irreversible
-- early exit not allowed
-- lock increases redemption bonus cap only
-- bonus is conditional and reserve-gated
-- floor never decreases but bonus can drop
+### 10.7.1 No Early Unlock (Locked)
+Once lock is ACTIVE:
+- user cannot unlock early
+- user cannot shorten duration
+- user cannot cancel
+- user cannot transfer lock
 
-UI MUST require:
-- explicit checkbox:
-  - “I understand this lock is irreversible and cannot be exited early.”
+This is absolute.
 
 ---
 
-## 10.9 Lock Events (Mandatory)
+### 10.7.2 No Extensions (Locked v1)
+Locked v1 policy:
+✅ user cannot extend a lock once active
+
+Reason:
+- prevents manipulation and reduces edge cases
+- keeps audits simpler
+
+In future versions lock extension MAY be considered, but not v1.
+
+---
+
+## 10.8 Lock Expiration (Hard)
+
+### 10.8.1 Expiration Trigger
+Lock expires automatically when:
+- block.timestamp >= lockEndTimestamp
+
+Then:
+- lockStatus becomes EXPIRED
+
+### 10.8.2 Expired Lock Behavior
+When EXPIRED:
+- CapMultiplier = UnlockedCapMultiplier = 1.0150
+- lockEnabled may remain true for historical record
+- UI must show: “Lock expired”
+
+Important:
+- expired locks do NOT preserve higher caps
+
+---
+
+## 10.9 Interaction With Redemption Engine (Hard)
+
+Redemption Engine must always request the cap:
+
+CapMultiplier =
+- lockCapMultiplier if lock ACTIVE
+- 1.0150 otherwise
+
+EffectiveMultiplier =
+min(BonusMultiplierRaw, CapMultiplier)
+
+This is mandatory.
+
+---
+
+## 10.10 Lock Visibility and Reporting (Hard)
+
+UI MUST show on each Position:
+- lock OFF / ACTIVE / EXPIRED
+- days remaining
+- cap multiplier
+
+Additionally Account-level dashboard must display:
+- “Locked balance” (sum of locked positions)
+- “Unlocked balance”
+
+---
+
+## 10.11 Normie Mode vs Advanced Mode Lock UI (Hard)
+
+### 10.11.1 Normie Mode Lock Options (Locked)
+Normie Mode may only present:
+
+- OFF (default)
+- 1 year (cap 1.035)
+- 3 years (cap 1.045)
+- 5 years (cap 1.050)
+
+Normie mode must not show long list.
+
+### 10.11.2 Advanced Mode Lock Options
+Advanced Mode must show full menu:
+
+- 30d / 90d / 180d / 1y / 2y / 3y / 5y / 10y / 25y
+
+---
+
+## 10.12 Disclosures Required For Lock (Hard)
+
+Before enabling lock, UI MUST require explicit acknowledgement:
+
+- “Lock is irreversible.”
+- “No early exit.”
+- “Lock does not guarantee profit.”
+- “Lock only increases redemption bonus cap.”
+
+The acknowledgement MUST be stored off-chain AND (recommended) as an on-chain event.
+
+Locked decision:
+✅ must emit event LockDisclosureAck()
+
+---
+
+## 10.13 Mandatory Events (Hard)
 
 Contracts MUST emit:
 
-- LockEnabled(vaultId, positionId, durationSeconds, capMultiplier, startTimestamp, endTimestamp)
-- LockExpired(vaultId, positionId, timestamp)
-- LockCapApplied(vaultId, positionId, capMultiplier, timestamp)
+- LockEnabled(accountVaultId, positionId, durationSeconds, capMultiplier, lockEndTimestamp, timestamp)
+- LockExpired(accountVaultId, positionId, timestamp)
+- LockDisclosureAck(accountVaultId, positionId, timestamp)
+
+---
+
+## 10.14 Developer Checklist (Hard)
+
+Developer MUST implement:
+
+✅ Position-level locking  
+✅ Fixed duration menu only  
+✅ Updated unlocked cap = 1.0150  
+✅ Lock cap schedule up to 1.0500  
+✅ No early unlock  
+✅ No lock extensions (v1)  
+✅ Clear UI rules (Normie vs Advanced)  
+✅ Events + reporting  
+
+This section is final.
 
 ---
 
@@ -3999,237 +4126,927 @@ When OFF:
 
 ---
 
-# 15. Normie UX Mode (Familiar Experience Mode) (LOCKED)
+# 15. UI/UX Requirements (Accounts + Buckets + Locks + Fiat + Disclosures) — UPDATED (LOCKED)
 
-This section defines how YieldLoop must present itself to normal users.
-It is mandatory. If not built, YieldLoop will remain a DeFi toy for nerds.
+This section defines EXACTLY what the YieldLoop DApp must look like and how it must behave.
+It is NOT optional guidance. It is build requirements.
 
-This section defines:
-- 15A UX modes (Normie vs Advanced)
-- 15B Default path (simple)
-- 15C Required language replacements
-- 15D Required UI structure
-- 15E User education + guardrails
-- 15F Monthly reporting behavior
+This version is updated to include:
+✅ Multiple labeled Accounts/Buckets (Christmas Fund, Car, etc.)  
+✅ Position-level locks (VaultOS)  
+✅ Updated unlocked redemption cap: dynamic 1.0000 → 1.0150  
+✅ Fiat rail integration stubs (Transak/MoonPay feature-flagged)  
+✅ Normie Mode default + Advanced Mode toggle
 
 ---
 
-## 15A. UX Modes (Hard)
+## 15.1 UX Principles (Hard)
 
-YieldLoop MUST provide two distinct UI modes:
+YieldLoop UX must:
+- feel familiar like fintech (CashApp/Coinbase)
+- hide DeFi jargon by default
+- force disclosures where required
+- keep money actions explicit and reversible where possible
+- preserve self-custody boundaries without confusion
 
-1) **Normie Mode (default)**
-2) **Advanced Mode (toggle)**
+Hard rules:
+- No hidden settings impacting funds.
+- No “auto lock”.
+- No “auto config changes”.
+- No trading begins until the user acknowledges disclosures.
+- Every important on-chain action MUST have a UI confirmation and a receipt view.
+
+---
+
+## 15.2 UX Modes (Locked)
+
+The DApp MUST implement 2 UI modes:
+
+1) **Normie Mode (Default)**
+2) **Advanced Mode (Toggle)**
 
 Rules:
-- Normie Mode is default for every new wallet
-- Advanced mode must be manually enabled
-- mode setting stored per wallet address (off-chain + optional on-chain mapping)
+- first time wallet connect → Normie Mode always
+- Advanced Mode must be manually enabled
+- user mode preference stored off-chain per wallet
+- user can switch modes anytime
 
 ---
 
-## 15B. Normie Mode — Default User Flow (Hard)
+## 15.3 Terminology Rules (Locked)
 
-Normie flow must be:
-
-1) Connect Wallet
-2) “Add Funds”
-   - buy USDT (Transak/MoonPay) OR deposit existing USDT
-3) “Start YieldLoop”
-   - shows a simple configuration
-4) Confirm
-5) Strategy runs
-6) Dashboard shows earnings
-7) Withdraw / cash-out
-
----
-
-## 15C. Normie Mode — Mandatory Simplifications
-
-### 15C.1 Hide DeFi Jargon
-In Normie mode, UI MUST NOT show:
-- “vault”
-- “router”
-- “DEX”
-- “slippage”
-- “LP”
-- “MEV”
-- “BPS”
-- “arb”
-
-Those concepts may exist internally but are hidden.
-
----
-
-### 15C.2 Required Language Replacements
-Normie mode wording MUST map as:
+### 15.3.1 Normie Mode Terms (Required)
+The UI MUST use:
 
 - Vault → **Account**
+- AccountVault → **Account**
+- Label → **Purpose**
 - Position → **Plan**
 - Allocation Weights → **Portfolio Mix**
-- Compounding Mode → **Reinvest Settings**
+- Compounding → **Reinvest Setting**
 - Claim → **Withdraw Profits**
 - Redeem LOOP → **Convert LOOP to USDT**
 - FloorPrice → **Backed Value**
-- BonusMultiplier → **Redemption Boost**
+- BonusMultiplier → **Boost**
+- Redemption Queue → **Payout Queue**
 - Close Position → **Stop Plan**
-- In trade → **Active**
-- Free balance → **Available Now**
+- Free USDT → **Available Now**
+- In Trade → **Active**
+
+### 15.3.2 Advanced Mode Terms
+Advanced mode may use the internal terms:
+- Vault / Position / Allocation weights / Execution logs / CR / etc.
 
 ---
 
-## 15D. Normie Mode — Configuration Options (Locked)
+## 15.4 Mandatory Screens (Updated, Locked)
 
-Normie mode must only expose:
+The DApp MUST include ALL screens below:
 
-1) Portfolio Mix:
-   - Conservative (default)
-   - Balanced
-   - Aggressive
+### Core:
+1) Landing Page
+2) Connect Wallet
+3) Home Dashboard (Wallet Overview)
+4) Accounts Dashboard (List of Accounts/Buckets)
+5) Account Detail Page (by label/purpose)
+6) Create Account (Purpose Bucket)
+7) Deposit / Create Plan (Deposit USDT)
+8) Configure Plan
+9) Disclosures / Acknowledgements
+10) Plan Detail Page
+11) Withdraw Profits (Claim)
+12) Convert LOOP → USDT (Redemption)
+13) VaultOS Lock Screen (per Plan)
+14) Stop Plan (Close)
+15) Transaction History / Logs
+16) Settings
+17) Support / Help / Recovery
 
-These map to fixed allocation presets:
+### Fiat rails (feature flagged):
+18) Add Funds (Fiat Buy USDT)
+19) Cash Out (Fiat Sell USDT)
+20) Fiat Order Status Screen
 
-**Conservative**
-- BTCB 35%
-- ETH 25%
-- BNB 25%
-- XRP 10%
-- SOL 5%
+No screen may be omitted.
 
-**Balanced**
-- BTCB 30%
-- ETH 25%
-- BNB 25%
-- XRP 10%
-- SOL 10%
-(this equals default)
+---
 
-**Aggressive**
-- BTCB 20%
-- ETH 25%
-- BNB 25%
-- XRP 15%
-- SOL 15%
+## 15.5 Landing Page (Required Content)
 
-2) Reinvest Settings:
-- Reinvest all (100% compound)
-- Half and half (50/50 default)
-- Withdraw all profits (100% collect)
+Must include:
+- YieldLoop name + logo
+- “Deposit USDT, earn rewards in USDT or LOOP.”
+- “Spot trading + arbitrage between PancakeSwap and BiSwap only.”
+- “No LP. No lending. No leverage.”
+- call-to-action:
+  - Connect Wallet
+- disclaimers:
+  - no guaranteed returns
+  - self-custody
 
-3) Rewards:
+---
+
+## 15.6 Connect Wallet Screen (Hard)
+
+Must support:
+- MetaMask
+- WalletConnect
+
+Must show:
+- connected address
+- chain/network name
+- if not BNB chain:
+  - disable deposit/buy buttons
+  - show “Switch to BNB Chain”
+  - provide switch network button
+
+Must show warning:
+- “If you lose your seed phrase, we cannot recover your funds.”
+
+---
+
+## 15.7 Home Dashboard (Wallet Overview) (Hard)
+
+This is the fintech-style wallet home.
+
+### Must show:
+- Total Wallet Value (USDT)
+- Total Principal (USDT)
+- Total Earnings (USDT equivalent)
+- Total Claimable:
+  - USDT
+  - LOOP
+
+### System stats ribbon:
+- Backed Value (FloorPrice)
+- Boost status:
+  - show current “Boost Range”
+  - Unlocked max = 1.015
+  - Locked max = up to 1.050
+- System Status:
+  - ACTIVE / PAUSED / SUNSET
+
+### Quick actions:
+- Add Funds
+- Create Account
+- Start New Plan
+- Withdraw Profits
+- Convert LOOP to USDT
+
+---
+
+## 15.8 Accounts Dashboard (Buckets List) — REQUIRED (New)
+
+Accounts are labeled buckets:
+Christmas fund / car / college etc.
+
+### Must show account cards list:
+Each Account card displays:
+- Purpose label (ex: “Vacation Fund”)
+- Account Value (USDT)
+- Claimable (USDT + LOOP)
+- Locked Balance vs Unlocked Balance (USDT)
+- Active Plans count
+- Buttons:
+  - View Account
+  - Start Plan
+  - Deposit
+
+### Must include:
+- Create New Account button
+
+---
+
+## 15.9 Create Account Screen (Purpose Bucket) (Hard)
+
+### Required fields:
+- label/purpose text input (2–32 chars)
+
+### Required preset chips:
+- Christmas Fund
+- New Car
+- College
+- House
+- Vacation
+- Emergency Fund
+- Other (custom)
+
+### Rules:
+- label stored off-chain only
+- on-chain: AccountVault created and returns accountVaultId
+
+### Buttons:
+- Create Account
+- Cancel
+
+On success:
+- route to Account Detail page
+
+---
+
+## 15.10 Account Detail Page (Hard)
+
+Account detail shows bucket-level view.
+
+### Must show:
+- Account label (purpose)
+- accountVaultId (advanced collapse)
+- total principal
+- total value estimate
+- total earnings
+- claimable USDT
+- claimable LOOP
+- locked vs unlocked breakdown
+- list of Plans (Positions)
+
+### Must include actions:
+- Start New Plan (within this account)
+- Deposit (creates new plan)
+- Rename label (off-chain action)
+
+---
+
+## 15.11 Deposit / Start New Plan Screen (Hard)
+
+Deposit flow must always start from:
+- wallet OR selected account
+
+User must choose:
+- target Account (dropdown)
+- deposit amount (USDT)
+
+Rules:
+- min deposit 250 USDT
+- show USDT wallet balance
+- show Approve button (allowance)
+- show Deposit button
+
+On deposit success:
+- Plan created
+- route to Configure Plan
+
+---
+
+## 15.12 Configure Plan Screen (Hard)
+
+This config is per Plan (Position).
+
+### Configuration includes (exactly):
+A) Portfolio Mix  
+B) Reinvest Setting  
+C) Rewards Currency  
+D) Optional Lock  
+
+---
+
+### 15.12.1 Normie Mode Configure (Locked Simplicity)
+Normie mode MUST show:
+
+**Portfolio Mix (3 options):**
+- Conservative
+- Balanced (default)
+- Aggressive
+
+**Reinvest Setting:**
+- Reinvest all
+- Half and half (default)
+- Withdraw all profits
+
+**Rewards Currency:**
 - USDT (20% fee)
 - LOOP (17.5% fee) default
 
-4) Lock Boost (optional):
-- OFF default
-- 1 year (cap 1.035)
-- 3 year (cap 1.045)
-- 5 year (cap 1.050)
-Normie mode must not show full 30d–25y menu.
+**Lock Boost:**
+- OFF (default)
+- 1 year
+- 3 years
+- 5 years
+
+Normie mode MUST NOT show:
+- percentages sliders
+- tier bands
+- CR
+- bps values
 
 ---
 
-## 15E. Advanced Mode (Full Control)
+### 15.12.2 Advanced Mode Configure
+Advanced mode MUST show:
 
-Advanced mode MUST expose:
-- exact allocation BPS sliders
-- exact lock durations menu (30d to 25y)
-- full analytics (CR, tier bands)
-- execution logs
-- slippage/gas guardrail readouts
-- redemption queue details
-
-But:
-- even advanced mode must still enforce guardrails
-- advanced mode does NOT unlock additional strategies in v1
+- allocation sliders (BTCB/ETH/BNB/XRP/SOL)
+- must sum to 100%
+- compounding 3 options
+- rewards currency 2 options
+- lock full menu (30d–25y)
 
 ---
 
-## 15F. Normie Mode — Default Screens
-
-Normie mode screens must be:
-
-1) Home / Account
-2) Add Funds
-3) Start Plan
-4) Earnings
-5) Withdraw / Cash Out
-6) Settings (disclosures, support, advanced toggle)
-
-No additional complexity.
+### 15.12.3 Submit Behavior (Hard)
+Submit configuration must route into Disclosures screen (mandatory gate).
+No trading is allowed before acknowledgements.
 
 ---
 
-## 15G. Normie Mode — Dashboard Requirements
+## 15.13 Disclosures / Acknowledgements Screen (Hard Gate)
 
-Dashboard MUST show:
+User MUST acknowledge 3 disclosures before Plan becomes READY:
 
-- Account Balance (USDT)
-- Earnings (USDT)
-- Earnings (LOOP) if selected
-- “Available now” vs “Active”
-- Backed Value (FloorPrice)
-- Redemption Boost (effective multiplier)
+1) Strategy disclosure
+2) Fee disclosure
+3) Risk disclosure
 
-Also show:
-- “Stop Plan” button
-- “Withdraw Profits” button
+Each disclosure requires:
+- scroll box
+- checkbox “I understand”
+- signature button “Acknowledge”
 
----
+Stored on-chain timestamps required.
 
-## 15H. User Education (Hard)
-
-YieldLoop MUST implement:
-- contextual tooltips
-- “Learn more” modals
-- warning banners during stress conditions (queue, pause)
-
-Mandatory Education cards:
-- What is LOOP?
-- Why is LOOP redeemable?
-- What does Backed Value mean?
-- What is Redemption Boost?
-- Why can payouts queue?
+Locked rule:
+- Any config change requires re-acknowledgement.
 
 ---
 
-## 15I. Mandatory Safety UX (Hard)
+## 15.14 Plan Detail Page (Hard)
 
-Normie users MUST be shown these warnings:
+Must show:
 
-- before first deposit:
-  - “This is crypto. You can lose money.”
-- before enabling lock:
-  - “Lock cannot be reversed.”
-- before redemption:
-  - “Bonus can drop if reserve is stressed.”
-- during queue:
-  - “Your redemption will process daily in order.”
+### Overview
+- Plan ID
+- Account label
+- principal
+- value estimate
+- status badge
 
----
-
-## 15J. Monthly Reporting UX (Hard)
-
-Normie dashboard MUST include:
-- monthly statement view
-
-Statement must show:
-- start balance
-- end balance
-- net profit
-- total fees
-- total LOOP minted
-- redemptions
+### Config
+- portfolio mix OR allocation weights
+- reinvest setting
+- rewards currency
 - lock status
 
+### Balances
+- Available Now (free USDT)
+- Active (in-trade USDT)
+- Claimable USDT
+- Claimable LOOP
+
+### Controls
+- Withdraw Available Now
+- Withdraw Profits (Claim)
+- Convert LOOP → USDT (Redeem)
+- Add Lock / View Lock
+- Stop Plan (Close)
+
 ---
 
-## 15K. Required Product Behavior (Non-Negotiable)
-In Normie mode:
-- default settings must work immediately
-- user must not need to understand DeFi
-- deposit/buy/withdraw must feel like fintech
-- advanced mode exists but is not pushed
+## 15.15 Withdraw Profits (Claim Screen) (Hard)
+
+Shows:
+- claimable USDT
+- claimable LOOP
+
+Buttons:
+- Withdraw USDT profits
+- Withdraw LOOP profits
+
+Rules:
+- amount default max
+- show tx hash receipt on completion
+
+---
+
+## 15.16 Convert LOOP → USDT (Redemption Screen) (UPDATED)
+
+Must display:
+
+### Required live outputs:
+- Backed Value (FloorPrice)
+- Current Boost (BonusMultiplierRaw)
+- User’s Cap:
+  - unlocked max = 1.015
+  - locked max based on lock
+- Effective Multiplier = min(boost, cap)
+- Expected USDT out
+
+### User actions:
+- enter LOOP amount
+- button: Convert
+
+### Must show queue behavior:
+- “Instant” if passes MinCR
+- “Queued” if would violate MinCR
+
+Warnings:
+- “Boost depends on reserve health and can drop.”
+- “Queued payouts process daily in order.”
+
+---
+
+## 15.17 VaultOS Lock Screen (Per Plan) (Updated)
+
+Lock UI must show:
+- lock status OFF / ACTIVE / EXPIRED
+- remaining time
+- cap multiplier benefit
+
+Normie lock choices:
+- OFF
+- 1y / 3y / 5y
+
+Advanced lock choices:
+- full menu 30d–25y
+
+Before enabling lock:
+- irreversible confirmation modal required
+
+---
+
+## 15.18 Stop Plan / Close Screen (Hard)
+
+Must explain:
+- stops new trades
+- waits for active trades to close
+- funds become available afterward
+
+Buttons:
+- Stop Plan
+- Withdraw Available Now (if any)
+
+Must not promise timeline.
+
+---
+
+## 15.19 Transaction History / Logs (Hard)
+
+Must show:
+
+At wallet level:
+- deposits
+- withdrawals
+- claims
+- redemptions
+- queue fills
+
+At plan level:
+- executions
+- settlements
+- fees
+- LOOP minted
+
+Each row:
+- timestamp
+- type
+- amounts
+- tx hash + explorer link
+
+---
+
+## 15.20 Settings Screen (Hard)
+
+Must contain:
+- current mode toggle Normie/Advanced
+- disclosure links
+- supported assets/venues
+- system parameters (read-only)
+- security warnings
+
+Must include:
+- official support email
+- official discord link
+- anti-scam warning
+
+---
+
+## 15.21 Support / Recovery Screen (Hard)
+
+Must include:
+
+- “YieldLoop cannot recover seed phrases.”
+- “If seed phrase lost, funds inaccessible.”
+- best security practices
+- how to recognize official links
+- monthly contact email policy:
+  - user must provide contact email (optional in UI)
+  - email stored off-chain
+  - used for monthly reports + security notices
+
+---
+
+## 15.22 Fiat Rails Screens (Feature Flag) (Hard)
+
+If FiatRailsEnabled = ON:
+
+### Add Funds Screen
+- Buy USDT (BEP-20) using Transak/MoonPay
+- clear provider boundary disclosure
+
+### Cash Out Screen
+- Sell USDT to bank via provider
+
+### Fiat Order Status Screen
+- shows status: pending / completed / failed
+- shows provider order ID
+- shows “contact provider” links
+
+If FiatRailsEnabled = OFF:
+- show Coming Soon
+- no dead buttons
+
+---
+
+## 15.23 Developer Checklist (Hard)
+
+Developer MUST deliver:
+
+✅ Wallet dashboard + Accounts dashboard  
+✅ Create/Rename Account labels (off-chain)  
+✅ Account detail grouping  
+✅ Plan creation per account  
+✅ Position-level lock UI + controls  
+✅ Redemption screen showing 1.015 unlocked cap  
+✅ Full disclosures gate  
+✅ Full transaction logs  
+✅ Support/recovery flow  
+✅ Fiat rails screens behind flag  
+
+This section is final.
+
+---
+  
+# 16. Parameter Defaults (Full List — Locked v1) — UPDATED (LOCKED)
+
+This section defines ALL default parameters the developer must implement.
+Every parameter MUST be stored on-chain (where applicable), readable by UI, and changeable ONLY via timelock unless explicitly immutable.
+
+This version is updated for:
+✅ Multiple Accounts/Vaults per wallet (AccountVault object)  
+✅ Updated redemption rules: unlocked dynamic cap is **1.0150**  
+✅ Lock caps unchanged (up to 1.0500)  
+✅ Normie Mode preset portfolio mixes (fixed allocations)
+
+---
+
+## 16.1 Parameter Storage Policy (Hard)
+
+### 16.1.1 On-Chain Required Parameters
+All monetary/safety rules MUST be stored on-chain:
+
+- fees
+- guardrails
+- thresholds
+- floor targets
+- redemption rules
+- queue rules
+- lock cap schedule
+
+### 16.1.2 Off-Chain Required Parameters
+The following MUST be stored off-chain only:
+
+- Account labels (purpose text)
+- user contact email
+- fiat order metadata (provider IDs)
+
+Hard rule:
+- **No PII stored on-chain.**
+
+---
+
+## 16.2 Core Product Defaults (Locked)
+
+- ChainIdAllowed = BNB Chain mainnet chainId
+- DepositAsset = USDT (BEP-20)
+- DepositDecimals = 18 (USDT BEP-20 standard)
+- MinDepositUSDT = 250
+
+Deposits that do not meet criteria MUST revert.
+
+---
+
+## 16.3 Account/Vault Model Defaults (Updated)
+
+- MaxAccountsPerWallet = UNLIMITED (no cap)
+- PositionsPerAccount = UNLIMITED (no cap)
+- DepositCreatesNewPosition = TRUE (locked)
+- AccountLabelsStoredOnChain = FALSE (locked)
+- AccountLabelMaxChars = 32 (off-chain enforcement)
+
+---
+
+## 16.4 Supported Assets (Locked)
+
+Supported assets list is fixed, ordered:
+
+AssetIndex mapping:
+- 0 = BTCB
+- 1 = ETH
+- 2 = BNB
+- 3 = XRP
+- 4 = SOL
+
+Tokens outside this list MUST be rejected by:
+- allocation config
+- trading executor
+- any swap routes
+
+---
+
+## 16.5 Strategy Defaults (Locked)
+
+- EnabledStrategy_Spot = TRUE
+- EnabledStrategy_Arbitrage = TRUE
+- EnabledStrategy_LP = FALSE
+- EnabledStrategy_Lending = FALSE
+- EnabledStrategy_Leverage = FALSE
+
+Venues:
+- AllowedVenues = {PCS, BiSwap} only
+
+---
+
+## 16.6 Default Allocation + Normie Presets (Updated)
+
+### 16.6.1 Default Allocation (Advanced Mode Default)
+DefaultAllocationBPS:
+- BTCB 3000
+- ETH  2500
+- BNB  2500
+- XRP  1000
+- SOL  1000
+
+### 16.6.2 Normie Portfolio Mix Presets (Locked)
+
+These are fixed presets in UI config:
+
+**ConservativePresetBPS**
+- BTCB 3500
+- ETH  2500
+- BNB  2500
+- XRP  1000
+- SOL   500
+
+**BalancedPresetBPS (Default)**
+- BTCB 3000
+- ETH  2500
+- BNB  2500
+- XRP  1000
+- SOL  1000
+
+**AggressivePresetBPS**
+- BTCB 2000
+- ETH  2500
+- BNB  2500
+- XRP  1500
+- SOL  1500
+
+---
+
+## 16.7 Compounding Defaults (Locked)
+
+CompoundingMode enum:
+
+- MODE_A = 100% Compound
+- MODE_B = 50/50 Compound + Collect
+- MODE_C = 100% Collect
+
+Defaults:
+- DefaultCompoundingMode = MODE_B
+
+DP (Distributable Profit) rules:
+- MODE_A DP = 0
+- MODE_B DP = 50% of NetProfit
+- MODE_C DP = 100% of NetProfit
+
+---
+
+## 16.8 Reward Currency Defaults (Locked)
+
+RewardCurrency enum:
+- USDT
+- LOOP
+
+Defaults:
+- DefaultRewardCurrency = LOOP
+
+---
+
+## 16.9 Fee Model Defaults (Locked)
+
+Fee applies ONLY to DistributableProfitUSDT.
+
+Fee rates:
+- FeeRate_USDT = 0.20
+- FeeRate_LOOP = 0.175
+
+Fee splits (must sum 10000 BPS):
+- DevOpsSplitBPS = 2500
+- MarketingSplitBPS = 2500
+- ReserveSplitBPS = 2500
+- LoopLabsSplitBPS = 2500
+
+Fee split changes:
+- allowed only by timelock
+- TimelockDelaySeconds = 172800 (48 hours)
+
+---
+
+## 16.10 Trading Guardrails Defaults (Locked)
+
+### 16.10.1 Execution Limits
+- MaxExecutionSizePercent = 10%
+- MaxExecutionSizeUSDT = 750
+- MaxArbSizePercent = 7.5%
+- MaxArbSizeUSDT = 500
+
+### 16.10.2 Slippage / Quote
+- MaxSlippagePerLegBPS = 30
+- QuoteTTLSeconds = 15
+
+### 16.10.3 Liquidity
+- MinimumLiquidityDepthUSDT = 50000
+
+### 16.10.4 Drift
+- MaxDriftBPS = 250
+
+### 16.10.5 Gas
+- MaxGasPerExecutionUSDT = 1.25
+
+---
+
+## 16.11 Profit Threshold Defaults (Locked)
+
+Expected net profit thresholds:
+- MinExpectedProfitSpotUSDT = 0.50
+- MinExpectedProfitArbUSDT = 1.50
+
+Buffers:
+- MEVBufferSpotUSDT = 0.25
+- MEVBufferArbUSDT = 0.50
+- SlippageBufferUSDT = 0.25
+
+If profit after buffers fails threshold:
+- execution MUST not run
+
+---
+
+## 16.12 Failure Threshold Defaults (Locked)
+
+Rolling failure windows:
+- MaxFailedExecutionsPer10Min = 3
+- FailureCooldownSeconds = 600 (10 minutes)
+- QuoteFailurePauseThreshold = 3
+
+Pause behavior:
+- when threshold exceeded:
+  - position paused
+- if systemic:
+  - global pause
+
+---
+
+## 16.13 Oracle Sanity Defaults (Locked)
+
+Oracle use:
+- OracleEnabled = TRUE
+
+Deviation cap:
+- OracleDeviationMaxBPS = 500 (5%)
+
+If deviation exceeded:
+- trade abort
+- failure counter increments
+
+---
+
+## 16.14 Reserve + Floor Defaults (Locked)
+
+Reserve:
+- ReserveAsset = USDT only
+- SRWithdrawEnabled = FALSE (hard)
+
+Collateralization:
+- TargetCR = 1.05
+- MinCR = 1.00
+
+Floor:
+- InitialFloorPrice = 1.00
+- FloorEpoch = Monthly
+- FloorMonotonic = TRUE
+
+---
+
+## 16.15 Redemption Defaults (UPDATED)
+
+### 16.15.1 TierStep
+- TierStep = 0.0075
+
+### 16.15.2 Bonus Tiers by TierIndex
+TierIndex → BonusMultiplierRaw:
+- 0 → 1.0000
+- 1 → 1.0075
+- 2 → 1.0150
+- 3 → 1.0225
+- 4 → 1.0250
+
+### 16.15.3 CR Band Thresholds (Locked)
+Bands:
+- Band0: CR < 1.0000 → Tier 0
+- Band1: 1.0000 ≤ CR < 1.0125 → Tier 1
+- Band2: 1.0125 ≤ CR < 1.0250 → Tier 2
+- Band3: 1.0250 ≤ CR < 1.0375 → Tier 3
+- Band4: CR ≥ 1.0375 → Tier 4
+
+### 16.15.4 Cap Rules (UPDATED)
+- UnlockedCapMultiplier = 1.0150 (locked)
+- Locked cap multipliers from LockEngine schedule
+- EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)
+
+### 16.15.5 Redemption Output
+- RedeemOutputAsset = USDT only
+- Redeemed LOOP must burn
+
+---
+
+## 16.16 Redemption Queue Defaults (Locked)
+
+Queue:
+- enabled = TRUE
+- type = FIFO
+
+Daily processing:
+- QueueProcessingTimeUTC = 00:00
+
+Daily budget:
+- DailyRedemptionMaxPercentSR = 5%
+
+Partial fills:
+- Enabled = TRUE
+
+Cancellation:
+- Allowed ONLY if:
+  - status == QUEUED
+  - and no partial fill has occurred
+
+---
+
+## 16.17 VaultOS Lock Defaults (UPDATED alignment)
+
+### 16.17.1 Lock Enabled Default
+- DefaultLock = OFF
+
+### 16.17.2 Lock Duration Menu (Locked)
+Allowed durations:
+- 30d, 90d, 180d, 1y, 2y, 3y, 5y, 10y, 25y
+
+### 16.17.3 Lock Caps Schedule (Locked)
+- 30d  = 1.0250
+- 90d  = 1.0275
+- 180d = 1.0300
+- 1y   = 1.0350
+- 2y   = 1.0400
+- 3y   = 1.0450
+- 5y+  = 1.0500
+- 10y  = 1.0500
+- 25y  = 1.0500
+
+### 16.17.4 Lock Behavior
+- No early unlock = TRUE
+- No extension = TRUE (v1)
+- Lock applied per Position = TRUE
+
+---
+
+## 16.18 Fiat Rails Defaults (Feature Flag)
+
+- FiatRailsEnabled = FALSE (default)
+- SupportedFiatProviders = {Transak, MoonPay}
+- SupportedFiatAssetBuy = USDT (BEP-20) only
+- SupportedFiatAssetSell = USDT (BEP-20) only
+- MinFiatBuyUSD = 260
+
+---
+
+## 16.19 Notification Defaults
+
+- MonthlyEmailEnabled = TRUE
+- MonthlyEmailSendDay = 1st of month
+- MonthlyEmailSendLocalTime = 12:00 local time
+- SecurityAlertsEnabled = TRUE
+
+---
+
+## 16.20 Developer Checklist (Hard)
+
+Developer MUST implement:
+
+✅ All parameters as constants or timelock-settable values  
+✅ Updated UnlockedCapMultiplier = 1.0150  
+✅ CR thresholds and tier mapping exactly  
+✅ Lock cap schedule up to 1.0500  
+✅ Normie preset mixes exactly as defined  
+✅ Fiat rails behind feature flag  
+✅ No on-chain label storage  
+
+This section is final.
 
 ---
 
