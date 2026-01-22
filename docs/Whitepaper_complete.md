@@ -299,12 +299,23 @@ Fee MUST NOT be applied to:
 - losses
 
 ### 1.6.2 Fee Rates (Locked)
-- If user chooses reward currency = USDT:
-  - FeeRate = **20%**
-- If user chooses reward currency = LOOP:
-  - FeeRate = **17.5%**
 
-Fee changes are NOT permitted in v1.
+YieldLoop uses a dynamic performance fee ladder tied to total system AUM.
+
+FeeRate MUST be computed deterministically from AUM_USDT (defined in Section 5.3.2).  
+FeeRate is allowed to increase or decrease as AUM changes.
+
+Fee Rates by reward currency:
+
+- If user chooses reward currency = USDT:
+  - FeeRate starts at **15%**
+  - FeeRate can reduce down to **5%** as AUM increases
+- If user chooses reward currency = LOOP:
+  - FeeRate starts at **13%**
+  - FeeRate can reduce down to **3%** as AUM increases
+
+Fee rates MUST follow the AUM ladder in Section 5.3.
+Fee changes are permitted only through AUM movement and MUST NOT be manually overridden in v1.
 
 ### 1.6.3 Fee Split (Locked Defaults)
 Fee split defaults (total 100%):
@@ -414,73 +425,201 @@ FloorPrice_next =
 
 ## 1.10 Redemption Requirements (Hard)
 
-### 1.10.1 Base Redemption
-All LOOP redemptions MUST pay at least:
-- Base multiplier = 1.000
+LOOP redemption converts LOOP → USDT using FloorPrice and a bonus multiplier system.
+All redemption math MUST use deterministic integer arithmetic and MUST round DOWN.
 
-RedeemUSDT_base = LOOP_Redeemed * FloorPrice
+### 1.10.1 Redemption Inputs (Hard)
 
-### 1.10.2 Bonus System (Unlocked Users)
-Unlocked cap:
-- MaxBonusUnlocked = 1.025
+Redemption request MUST include:
+- loopAmount
+- vaultId
+- positionId
+- timestamp
 
-BonusMultiplier MUST be:
-- tiered steps of 0.0075 (0.75%)
+System MUST load:
+- FloorPrice
+- current CollateralRatio (CR)
+- VaultOS lock status (active/expired)
+- CapMultiplier (see Section 9.9)
 
-Unlocked allowed values:
-- 1.0000
-- 1.0075
-- 1.0150
-- 1.0225
-- 1.0250
+### 1.10.2 Redemption Bonus Logic (Hard)
 
-### 1.10.3 Reserve Gating (Hard)
-If a redemption would push reserve health below safety:
-- bonus MUST collapse to 1.000
-- redemption MUST queue if still unsafe
+Redemption bonus MAY be applied based on system CR bands.
+BonusMultiplierRaw MUST be computed using the tier system.
 
-Minimum safety collateralization:
-- MinCR = 1.00 (Locked)
+However:
+- the final applied multiplier MUST always be clamped by CapMultiplier:
+  - EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)
+
+### 1.10.3 Unlocked Redemption Cap (Locked)
+
+Unlocked vaults (no active VaultOS lock) MUST have:
+- UnlockedCapMultiplier = **1.0100**
+
+Meaning:
+- unlocked redemption multiplier may vary from 1.0000 up to 1.0100 max
+- any tier above 1.0100 MUST be ignored for unlocked users
+
+### 1.10.4 Locked Redemption Cap (VaultOS)
+
+If VaultOS lock is active and not expired:
+- CapMultiplier MUST come from the LockEngine schedule (Section 1.11 + Section 9.9)
+
+Locked caps MUST range:
+- minimum: 1.0110 (at 3 months)
+- maximum: 1.0500 (at 60 months)
+
+### 1.10.5 Redemption Payout Formula (Hard)
+
+USDTOut =
+floor( loopAmount * FloorPrice * EffectiveMultiplier )
+
+Rounding rule:
+- MUST round DOWN always
+
+### 1.10.6 Reserve Safety Constraint (Hard)
+
+Redemption MUST NOT execute if it would cause:
+- CollateralRatio to drop below MinCR
+
+If redemption fails this rule:
+- transaction MUST revert
+- emit RedemptionRejected(reasonCode = MIN_CR_VIOLATION)
+
+---
+
+## 1.10 Redemption Requirements (Hard)
+
+LOOP redemption converts LOOP → USDT using FloorPrice and a bonus multiplier system.
+All redemption math MUST use deterministic integer arithmetic and MUST round DOWN.
+
+### 1.10.1 Redemption Inputs (Hard)
+
+Redemption request MUST include:
+- loopAmount
+- vaultId
+- positionId
+- timestamp
+
+System MUST load:
+- FloorPrice
+- current CollateralRatio (CR)
+- VaultOS lock status (active/expired)
+- CapMultiplier (see Section 9.9)
+
+### 1.10.2 Redemption Bonus Logic (Hard)
+
+Redemption bonus MAY be applied based on system CR bands.
+BonusMultiplierRaw MUST be computed using the tier system.
+
+However:
+- the final applied multiplier MUST always be clamped by CapMultiplier:
+  - EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)
+
+### 1.10.3 Unlocked Redemption Cap (Locked)
+
+Unlocked vaults (no active VaultOS lock) MUST have:
+- UnlockedCapMultiplier = **1.0100**
+
+Meaning:
+- unlocked redemption multiplier may vary from 1.0000 up to 1.0100 max
+- any tier above 1.0100 MUST be ignored for unlocked users
+
+### 1.10.4 Locked Redemption Cap (VaultOS)
+
+If VaultOS lock is active and not expired:
+- CapMultiplier MUST come from the LockEngine schedule (Section 1.11 + Section 9.9)
+
+Locked caps MUST range:
+- minimum: 1.0110 (at 3 months)
+- maximum: 1.0500 (at 60 months)
+
+### 1.10.5 Redemption Payout Formula (Hard)
+
+USDTOut =
+floor( loopAmount * FloorPrice * EffectiveMultiplier )
+
+Rounding rule:
+- MUST round DOWN always
+
+### 1.10.6 Reserve Safety Constraint (Hard)
+
+Redemption MUST NOT execute if it would cause:
+- CollateralRatio to drop below MinCR
+
+If redemption fails this rule:
+- transaction MUST revert
+- emit RedemptionRejected(reasonCode = MIN_CR_VIOLATION)
 
 ---
 
 ## 1.11 VaultOS Lock Requirements (Hard)
 
-### 1.11.1 Lock Durations (Locked Menu)
-Allowed durations:
-- 30 days
-- 90 days
-- 180 days
-- 1 year
-- 2 years
-- 3 years
-- 5 years
-- 10 years
-- 25 years
+VaultOS allows users to lock their position to earn a higher redemption cap multiplier.
+Locks are designed for savings-like behavior and long-term alignment.
 
-### 1.11.2 Lock Behavior
-- Lock increases redemption bonus cap only
-- Lock does not affect FloorPrice
-- Lock cannot be shortened
-- Early exit is NOT allowed in v1
+### 1.11.1 Lock Duration Constraints (Locked)
 
-### 1.11.3 Lock Cap Schedule (Locked)
-Unlocked:
-- cap = 1.0150
+VaultOS lock duration MUST be:
+- 0 months (Unlocked)
+OR
+- any integer month count from 3 to 60 inclusive
 
-Locked caps:
-- 30d  -> 1.0250
-- 90d  -> 1.0275
-- 180d -> 1.0300
-- 1y   -> 1.0350
-- 2y   -> 1.0400
-- 3y   -> 1.0450
-- 5y+  -> 1.0500
-- 10y  -> 1.0500
-- 25y  -> 1.0500
+Hard constraints:
+- lockMonths MUST be an integer
+- lockMonths MUST satisfy:
+  - lockMonths == 0
+  OR
+  - 3 <= lockMonths <= 60
 
-Hard max:
-- 1.0500
+Any lock duration outside these bounds MUST revert.
+
+Max lock term in v1:
+- 60 months (5 years)
+
+### 1.11.2 Lock Behavior Rules (Hard)
+
+- Lock cannot be shortened.
+- Lock cannot be canceled early.
+- Lock expiration is automatic based on time.
+- Lock history MAY be recorded for analytics.
+
+### 1.11.3 Lock Redemption Cap Schedule (Locked)
+
+If lockMonths = 0:
+- CapMultiplier = 1.0100
+
+If lockMonths is active and not expired:
+- CapMultiplier MUST start at 1.0110 at 3 months
+- CapMultiplier MUST rise gradually each month
+- CapMultiplier MUST reach 1.0500 at 60 months
+- CapMultiplier MUST never exceed 1.0500
+
+### 1.11.4 Lock Cap Calculation Formula (Hard)
+
+Define:
+- MIN_LOCK_MONTHS = 3
+- MAX_LOCK_MONTHS = 60
+- LOCK_MIN_CAP = 1.0110
+- LOCK_MAX_CAP = 1.0500
+
+If lockMonths == 0:
+- CapMultiplier = 1.0100
+
+Else:
+CapMultiplier =
+LOCK_MIN_CAP +
+((lockMonths - 3) * (LOCK_MAX_CAP - LOCK_MIN_CAP) / (60 - 3))
+
+Rounding rule:
+- CapMultiplier MUST round DOWN
+
+### 1.11.5 Lock Expiration Rule (Hard)
+
+When lock expires:
+- vault becomes “Unlocked” immediately
+- CapMultiplier becomes UnlockedCapMultiplier (1.0100)
+- no lingering lock benefit is permitted
 
 ---
 
@@ -1698,17 +1837,78 @@ Then:
 
 ## 5.3 Performance Fee Rates (Locked)
 
-Reward currency determines fee rate:
+Reward currency determines the performance fee rate.
+FeeRate MUST be computed dynamically based on total system AUM.
 
-- If user selects **USDT rewards**:
-  - FeeRate = 20% (0.20)
+FeeRate MUST be deterministic and MUST be computable on-chain.
 
-- If user selects **LOOP rewards**:
-  - FeeRate = 17.5% (0.175)
+### 5.3.1 Fee Rate Ranges (Locked)
 
-Fee rate MUST be:
-- stored as constant
-- not admin-changeable in v1
+USDT reward claims:
+- FeeRate_USDT_MAX = 15% (0.15)
+- FeeRate_USDT_MIN = 5%  (0.05)
+
+LOOP reward claims:
+- FeeRate_LOOP_MAX = 13% (0.13)
+- FeeRate_LOOP_MIN = 3%  (0.03)
+
+### 5.3.2 AUM Definition (Hard)
+
+Define:
+AUM_USDT = total mark-to-USDT value of:
+- all vault principal still held
+- all idle assets
+- all assets deployed in live positions (valued deterministically)
+
+AUM calculation MUST use:
+- deterministic price quoting
+- conservative rounding
+- no optimistic valuation
+
+### 5.3.3 AUM Ladder Parameters (Locked)
+
+Fee rate MUST decrease as AUM increases.
+
+AUM ladder range:
+- AUM_MIN = 100,000
+- AUM_MAX = 10,000,000
+
+Step size:
+- AUM_STEP = 100,000
+
+Fee rates MUST update based on the current AUM band.
+Fee rates MUST be allowed to increase if AUM decreases.
+
+### 5.3.4 Fee Rate Computation Formula (Hard)
+
+Define:
+steps =
+floor( ( clamp(AUM_USDT, AUM_MIN, AUM_MAX) - AUM_MIN ) / AUM_STEP )
+
+maxSteps =
+floor( (AUM_MAX - AUM_MIN) / AUM_STEP )
+
+progress = steps / maxSteps
+
+FeeRate_USDT =
+FEE_USDT_MAX - progress * (FEE_USDT_MAX - FEE_USDT_MIN)
+
+FeeRate_LOOP =
+FEE_LOOP_MAX - progress * (FEE_LOOP_MAX - FEE_LOOP_MIN)
+
+Rounding rule:
+- FeeRate MUST round DOWN
+
+### 5.3.5 Fee Rate Selection Rule (Hard)
+
+If reward currency = USDT:
+- FeeRate = FeeRate_USDT
+
+If reward currency = LOOP:
+- FeeRate = FeeRate_LOOP
+
+No other fee rates are permitted in v1.
+Manual fee override MUST NOT exist in v1.
 
 ---
 
@@ -2486,47 +2686,36 @@ BonusMultiplierRaw =
 
 ## 9.9 CapMultiplier (UPDATED — Critical Change)
 
-CapMultiplier controls the max bonus a user can receive.
+CapMultiplier controls the maximum redemption bonus a user can receive.
+This system ensures reserve protection while still rewarding long-term locks.
 
 ### 9.9.1 Unlocked Cap (UPDATED / LOCKED)
-Unlocked accounts (no VaultOS lock active) MUST have:
 
-UnlockedCapMultiplier = 1.0150
+Unlocked accounts (no VaultOS lock active) MUST have:
+- UnlockedCapMultiplier = **1.0100**
 
 Meaning:
-- bonus is dynamic from 1.0000 → 1.0150
-- tiers above 1.0150 are ignored for unlocked users
+- bonus is dynamic from 1.0000 → 1.0100
+- tiers above 1.0100 are ignored for unlocked users
 
-This creates the exact rule you requested:
-✅ unlocked accounts only get bonus if system is doing well  
-✅ max boost 1.015  
-✅ otherwise 1.000 or 1.0075
+### 9.9.2 Locked Caps (VaultOS) (UPDATED)
 
----
+If VaultOS lock is active and not expired:
+- CapMultiplier MUST be computed from the lock schedule
+- lockMonths MUST be between 3 and 60 inclusive
+- CapMultiplier MUST be between 1.0110 and 1.0500 inclusive
 
-### 9.9.2 Locked Caps (VaultOS)
-If VaultOS lock is active and not expired, cap comes from LockEngine:
-
-Cap schedule (unchanged):
-- Unlocked: 1.0150
-- 30d:  1.0250
-- 90d:  1.0275
-- 180d: 1.0300
-- 1y:   1.0350
-- 2y:   1.0400
-- 3y:   1.0450
-- 5y+:  1.0500
-- 10y:  1.0500
-- 25y:  1.0500
-
+Lock cap schedule characteristics (Locked):
+- 3 months: 1.0110
+- every month increases slightly
+- 60 months: 1.0500
 Hard max:
 - 1.0500
 
----
-
 ### 9.9.3 Lock Expiration Rule (Hard)
+
 When lock expires:
-- CapMultiplier becomes UnlockedCapMultiplier (1.0150)
+- CapMultiplier becomes UnlockedCapMultiplier (1.0100)
 - lock history remains recorded but does not grant cap benefit
 
 ---
@@ -2671,17 +2860,57 @@ Contracts MUST emit:
 
 ## 9.18 Developer Checklist (Hard)
 
-Developer MUST implement:
+This checklist is non-negotiable. v1 MUST implement these items exactly as written.
 
-✅ UnlockedCapMultiplier = 1.0150 (dynamic 1.0000 → 1.0150 only)  
-✅ Bonus tiers still computed globally using CR bands  
-✅ EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)  
-✅ MinCR enforcement queues unsafe redemptions  
-✅ FIFO queue with daily SR budget cap  
-✅ Burn LOOP on redemption  
-✅ Full event coverage  
+### 9.18.1 Core Determinism (Hard)
+- [ ] All accounting is deterministic.
+- [ ] All math uses fixed-point integer arithmetic.
+- [ ] All rounding is conservative and rounds DOWN.
+- [ ] Oracle / quote sources are deterministic and cannot be gamed by timing.
 
-This section is final.
+### 9.18.2 Redemption Logic (Hard)
+- [ ] Redemption converts LOOP → USDT using FloorPrice.
+- [ ] Redemption MUST revert if MinCR would be violated.
+- [ ] BonusMultiplierRaw is computed using CR tier bands.
+- [ ] EffectiveMultiplier MUST be clamped:
+  - EffectiveMultiplier = min(BonusMultiplierRaw, CapMultiplier)
+- [ ] Redemption payout math MUST always round DOWN.
+
+### 9.18.3 Cap System (UPDATED / LOCKED)
+- [ ] UnlockedCapMultiplier MUST be implemented as:
+  - **UnlockedCapMultiplier = 1.0100**
+- [ ] Unlocked redemption MUST never exceed 1.0100 multiplier.
+- [ ] Locked redemption MUST use VaultOS lock schedule caps:
+  - 3 months → 1.0110
+  - 60 months → 1.0500
+  - increases monthly
+- [ ] CapMultiplier MUST never exceed 1.0500.
+- [ ] Lock expiration MUST immediately revert user to unlocked cap (1.0100).
+
+### 9.18.4 VaultOS Lock System (UPDATED / LOCKED)
+- [ ] Lock durations MUST be:
+  - 0 months (Unlocked)
+  - OR integer months 3–60 inclusive
+- [ ] Locks cannot be shortened.
+- [ ] Locks cannot be canceled early.
+- [ ] Expired locks must automatically downgrade to unlocked cap rules.
+
+### 9.18.5 Performance Fee System (UPDATED / LOCKED)
+- [ ] Performance fee MUST be dynamic based on AUM ladder (Section 5.3).
+- [ ] USDT fee ladder MUST compute:
+  - 15% → 5%
+- [ ] LOOP fee ladder MUST compute:
+  - 13% → 3%
+- [ ] AUM ladder MUST step every $100,000.
+- [ ] AUM ladder MUST operate from $100,000 to $10,000,000.
+- [ ] Fee rates MUST be allowed to increase/decrease as AUM changes.
+- [ ] Manual fee override MUST NOT exist in v1.
+
+### 9.18.6 UI/UX Disclosure Requirements (Hard)
+- [ ] UI MUST show the current fee rate before user accepts/claims.
+- [ ] UI MUST show lock status and lockMonths.
+- [ ] UI MUST show current cap multiplier applied (or the locked/unlocked cap max).
+- [ ] UI MUST disclose that AUM-based fees can increase if AUM drops.
 
 ---
 
@@ -2749,20 +2978,42 @@ Hard rules:
 
 ## 10.4 Allowed Lock Durations (Locked Menu)
 
-Lock duration must be chosen ONLY from this list:
+VaultOS lock duration is chosen at deposit configuration time and cannot be shortened.
 
-- 30 days
-- 90 days
-- 180 days
-- 1 year
-- 2 years
-- 3 years
-- 5 years
-- 10 years
-- 25 years
+Allowed values are strictly limited to:
 
-No other duration values are permitted.
-If duration not in list → revert.
+### 10.4.1 Unlocked
+- **0 months** (Unlocked)
+
+Unlocked accounts:
+- CapMultiplier is clamped at 1.0100 maximum.
+
+### 10.4.2 Locked (3–60 Months)
+User MAY select any integer month duration:
+
+- **3 to 60 months**, inclusive
+- increments: **1 month**
+
+Examples:
+- 3 months
+- 6 months
+- 12 months
+- 24 months
+- 36 months
+- 48 months
+- 60 months (5 years maximum)
+
+Hard constraints:
+- lockMonths MUST be an integer
+- lockMonths MUST satisfy:
+  - lockMonths == 0 OR 3 <= lockMonths <= 60
+- Any value outside this set MUST revert
+
+Lock behavior constraints:
+- lock cannot be shortened
+- lock cannot be canceled early
+- lock expiry is time-based and automatic
+- after expiry, the vault becomes Unlocked immediately
 
 ---
 
